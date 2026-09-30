@@ -1,11 +1,15 @@
 import { colorForName } from "./names.js";
+import { pickRandomMission } from "./missions.js";
 import * as Game from "./game.js";
 
 const el = (id) => document.getElementById(id);
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let state = null;
 let selectedTargetId = null;
-let dayTallyPreview = null; // {targetId: count} shown before verdict is revealed
+let uiMode = "none"; // 'select-murder' | 'select-vote' | 'none'
+let dayTallyPreview = null; // {targetId: count} shown before the verdict resolves
+let missionCleanup = null;
 
 export function startApp() {
   wireSetupScreen();
@@ -66,7 +70,7 @@ function wireRevealScreen() {
 
   el("btn-continue").addEventListener("click", () => {
     showScreen("screen-game");
-    renderGame();
+    playNight();
   });
 }
 
@@ -103,20 +107,31 @@ function showScreen(id) {
   el(id).classList.add("active");
 }
 
-// ---------- GAME RENDER ----------
+function resetUiState() {
+  selectedTargetId = null;
+  uiMode = "none";
+  dayTallyPreview = null;
+  if (missionCleanup) {
+    missionCleanup();
+    missionCleanup = null;
+  }
+}
 
-function renderGame() {
+// ---------- SHARED RENDER ----------
+
+function renderHeader() {
   const human = Game.humanPlayer(state);
   el("round-label").textContent = `Round ${state.round}`;
 
   const phaseBadge = el("phase-label");
-  const isNight = state.phase === "night";
-  phaseBadge.textContent = isNight ? "Night" : phaseLabelForDay();
-  phaseBadge.className = "phase-badge" + (isNight ? " phase-night" : "");
+  phaseBadge.textContent = phaseLabelFor(state.phase);
+  phaseBadge.className = "phase-badge" + (state.phase === "night" ? " phase-night" : "");
 
   const roleReminder = el("role-reminder");
   if (!human.alive) {
-    roleReminder.innerHTML = `You were ${human.deathReason === "murdered" ? "murdered" : "banished"}. You are watching as a spirit.`;
+    roleReminder.innerHTML = `You were ${
+      human.deathReason === "murdered" ? "murdered" : "banished"
+    }. You are watching as a spirit.`;
   } else if (human.role === "traitor") {
     const allies = Game.livingPlayers(state).filter(
       (p) => p.role === "traitor" && p.id !== human.id
@@ -127,17 +142,23 @@ function renderGame() {
   } else {
     roleReminder.innerHTML = `You are <span class="you-faithful">FAITHFUL</span>`;
   }
-
-  renderLog();
-  renderPlayersGrid();
-  renderActionPanel();
 }
 
-function phaseLabelForDay() {
-  if (state.phase === "day-reveal") return "Morning";
-  if (state.phase === "day-vote") return "Round Table";
-  if (state.phase === "end") return "Game Over";
-  return "Day";
+function phaseLabelFor(phase) {
+  switch (phase) {
+    case "night":
+      return "Night";
+    case "day-reveal":
+      return "Morning";
+    case "mission":
+      return "Mission";
+    case "day-vote":
+      return "Round Table";
+    case "end":
+      return "Game Over";
+    default:
+      return "Day";
+  }
 }
 
 function renderLog() {
@@ -169,6 +190,13 @@ function renderPlayersGrid() {
     avatar.textContent = p.name.slice(0, 2).toUpperCase();
     card.appendChild(avatar);
 
+    if (state.shieldPlayerId === p.id) {
+      const shield = document.createElement("div");
+      shield.className = "shield-badge";
+      shield.textContent = "\u{1F6E1}";
+      card.appendChild(shield);
+    }
+
     const nameEl = document.createElement("div");
     nameEl.className = "player-name";
     nameEl.textContent = p.name + (p.isHuman ? " (You)" : "");
@@ -190,14 +218,18 @@ function renderPlayersGrid() {
     }
 
     if (selectable) {
-      card.addEventListener("click", () => {
-        selectedTargetId = selectedTargetId === p.id ? null : p.id;
-        renderGame();
-      });
+      card.addEventListener("click", () => onCardClick(p.id));
     }
 
     grid.appendChild(card);
   });
+}
+
+function onCardClick(playerId) {
+  selectedTargetId = selectedTargetId === playerId ? null : playerId;
+  renderPlayersGrid();
+  if (uiMode === "select-murder") renderActionSelectMurder();
+  else if (uiMode === "select-vote") renderActionSelectVote();
 }
 
 function shouldRevealRole(p) {
@@ -216,154 +248,18 @@ function tagFor(p, human) {
 
 function isSelectable(p) {
   const human = Game.humanPlayer(state);
-  if (!human.alive) return false;
-  if (!p.alive) return false;
-
-  if (state.phase === "night" && human.role === "traitor") {
-    return p.role === "faithful";
-  }
-  if (state.phase === "day-vote" && !dayTallyPreview) {
-    return p.id !== human.id;
-  }
+  if (!human.alive || !p.alive) return false;
+  if (uiMode === "select-murder") return p.role === "faithful";
+  if (uiMode === "select-vote") return p.id !== human.id;
   return false;
 }
 
-// ---------- ACTION PANEL ----------
-
-function renderActionPanel() {
+function renderWaitingPanel(text) {
   const panel = el("action-panel");
-  panel.innerHTML = "";
-  const human = Game.humanPlayer(state);
-
-  if (state.phase === "night") {
-    renderNightAction(panel, human);
-  } else if (state.phase === "day-reveal") {
-    renderMorningAction(panel);
-  } else if (state.phase === "day-vote") {
-    renderVoteAction(panel, human);
-  } else if (state.phase === "end") {
-    renderEndTransition();
-  }
-}
-
-function renderNightAction(panel, human) {
-  if (human.alive && human.role === "traitor") {
-    const p = document.createElement("p");
-    p.textContent = "Choose a Faithful to murder tonight.";
-    panel.appendChild(p);
-
-    const btn = makeButton("Confirm Murder", () => {
-      if (!selectedTargetId) return;
-      const target = selectedTargetId;
-      selectedTargetId = null;
-      Game.resolveNightMurder(state, target);
-      renderGame();
-    });
-    btn.disabled = !selectedTargetId;
-    panel.appendChild(btn);
-  } else {
-    const p = document.createElement("p");
-    p.className = "hint";
-    p.textContent = human.alive
-      ? "The Traitors are choosing a victim in the shadows..."
-      : "Night falls. You cannot act, but you may watch.";
-    panel.appendChild(p);
-
-    panel.appendChild(
-      makeButton("Continue", () => {
-        const targetId = Game.botMurderTarget(state);
-        Game.resolveNightMurder(state, targetId);
-        renderGame();
-      })
-    );
-  }
-}
-
-function renderMorningAction(panel) {
-  const p = document.createElement("p");
-  p.textContent = "The castle gathers to discuss the night's events.";
-  panel.appendChild(p);
-
-  panel.appendChild(
-    makeButton("Continue to the Round Table", () => {
-      Game.generateChatter(state, 3).forEach((line) =>
-        Game.addLog(state, line, "chatter")
-      );
-      state.phase = "day-vote";
-      selectedTargetId = null;
-      dayTallyPreview = null;
-      renderGame();
-    })
-  );
-}
-
-function renderVoteAction(panel, human) {
-  if (!dayTallyPreview) {
-    if (human.alive) {
-      const p = document.createElement("p");
-      p.textContent = "Cast your vote to banish a suspected Traitor.";
-      panel.appendChild(p);
-
-      const btn = makeButton("Confirm Vote", () => {
-        castAllVotes(human.id, selectedTargetId);
-      });
-      btn.disabled = !selectedTargetId;
-      panel.appendChild(btn);
-    } else {
-      const p = document.createElement("p");
-      p.className = "hint";
-      p.textContent = "You cannot vote, but the table proceeds without you.";
-      panel.appendChild(p);
-      panel.appendChild(makeButton("Continue", () => castAllVotes(null, null)));
-    }
-  } else {
-    const p = document.createElement("p");
-    p.textContent = "The votes are in.";
-    panel.appendChild(p);
-    panel.appendChild(
-      makeButton("Reveal Verdict", () => {
-        dayTallyPreview = null;
-        Game.resolveDayVotes(state);
-        selectedTargetId = null;
-        renderGame();
-      })
-    );
-  }
-}
-
-function castAllVotes(humanId, humanTargetId) {
-  if (humanId && humanTargetId) {
-    Game.castVote(state, humanId, humanTargetId);
-    const target = Game.getPlayer(state, humanTargetId);
-    Game.addLog(state, `You vote for <b>${escapeHtml(target.name)}</b>.`);
-  }
-
-  Game.livingPlayers(state)
-    .filter((p) => !p.isHuman)
-    .forEach((bot) => {
-      const targetId = Game.botDayVote(state, bot);
-      Game.castVote(state, bot.id, targetId);
-      const target = Game.getPlayer(state, targetId);
-      Game.addLog(state, `${escapeHtml(bot.name)} votes for <b>${escapeHtml(target.name)}</b>.`);
-    });
-
-  const tally = {};
-  Object.values(state.dayVotes).forEach((id) => {
-    tally[id] = (tally[id] || 0) + 1;
-  });
-  dayTallyPreview = tally;
-  selectedTargetId = null;
-  renderGame();
-}
-
-function renderEndTransition() {
-  const panel = el("action-panel");
-  panel.innerHTML = "";
-  panel.appendChild(
-    makeButton("See Results", () => {
-      showEndScreen();
-    })
-  );
+  panel.innerHTML = `
+    <p class="hint">${text}</p>
+    <div class="waiting-dots"><span></span><span></span><span></span></div>
+  `;
 }
 
 function makeButton(text, onClick) {
@@ -378,6 +274,226 @@ function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = str;
   return div.innerHTML;
+}
+
+// ---------- GAME FLOW ----------
+// Only three points require a human decision: choosing a murder target,
+// playing the day's mission, and casting a day vote. Everything else
+// (waiting, reveals, chatter, tallies) plays out automatically.
+
+async function proceedOrEnd(session, nextFn) {
+  await delay(900);
+  if (state !== session) return;
+  if (state.phase === "end") {
+    await delay(900);
+    if (state !== session) return;
+    showEndScreen();
+  } else {
+    nextFn();
+  }
+}
+
+async function playNight() {
+  resetUiState();
+  const human = Game.humanPlayer(state);
+  renderHeader();
+  renderLog();
+
+  if (human.alive && human.role === "traitor") {
+    uiMode = "select-murder";
+    renderPlayersGrid();
+    renderActionSelectMurder();
+    return;
+  }
+
+  renderPlayersGrid();
+  renderWaitingPanel("The Traitors are moving through the shadows...");
+  const session = state;
+  await delay(1800);
+  if (state !== session) return;
+
+  const targetId = Game.botMurderTarget(state);
+  Game.resolveNightMurder(state, targetId);
+  renderHeader();
+  renderPlayersGrid();
+  renderLog();
+  await proceedOrEnd(session, playMorning);
+}
+
+function renderActionSelectMurder() {
+  const panel = el("action-panel");
+  panel.innerHTML = "";
+  const p = document.createElement("p");
+  p.textContent = "Choose a Faithful to murder tonight.";
+  panel.appendChild(p);
+
+  const btn = makeButton("Confirm Murder", () => {
+    if (!selectedTargetId) return;
+    const targetId = selectedTargetId;
+    const session = state;
+    resetUiState();
+    Game.resolveNightMurder(state, targetId);
+    renderHeader();
+    renderPlayersGrid();
+    renderLog();
+    proceedOrEnd(session, playMorning);
+  });
+  btn.disabled = !selectedTargetId;
+  panel.appendChild(btn);
+}
+
+async function playMorning() {
+  state.phase = "day-reveal";
+  renderHeader();
+  renderWaitingPanel("Morning breaks over the castle...");
+  const session = state;
+  await delay(1700);
+  if (state !== session) return;
+  playMission();
+}
+
+function playMission() {
+  resetUiState();
+  state.phase = "mission";
+  renderHeader();
+  const human = Game.humanPlayer(state);
+  const session = state;
+
+  if (!human.alive) {
+    renderWaitingPanel("The Faithful attempt today's mission without you...");
+    (async () => {
+      await delay(1400);
+      if (state !== session) return;
+      playChatter();
+    })();
+    return;
+  }
+
+  const panel = el("action-panel");
+  panel.innerHTML = `
+    <p class="hint">Today's mission: complete it to win a shield for tonight.</p>
+    <div id="mission-mount"></div>
+  `;
+  const mount = panel.querySelector("#mission-mount");
+  const mission = pickRandomMission();
+  let resolved = false;
+
+  missionCleanup = mission.play(mount, (success) => {
+    if (resolved) return;
+    resolved = true;
+    missionCleanup = null;
+    Game.resolveMissionResult(state, success);
+    renderLog();
+    renderPlayersGrid();
+    (async () => {
+      await delay(1200);
+      if (state !== session) return;
+      playChatter();
+    })();
+  });
+}
+
+async function playChatter() {
+  state.phase = "day-vote";
+  renderHeader();
+  const panel = el("action-panel");
+  panel.innerHTML = `<p class="hint">The castle gathers at the Round Table...</p>`;
+  const session = state;
+
+  const lines = Game.generateChatter(state, 3);
+  for (const line of lines) {
+    if (state !== session) return;
+    Game.addLog(state, line, "chatter");
+    renderLog();
+    await delay(650);
+  }
+  await delay(350);
+  if (state !== session) return;
+  playVoting();
+}
+
+function playVoting() {
+  resetUiState();
+  renderHeader();
+  const human = Game.humanPlayer(state);
+
+  if (human.alive) {
+    uiMode = "select-vote";
+    renderPlayersGrid();
+    renderActionSelectVote();
+  } else {
+    renderPlayersGrid();
+    renderWaitingPanel("You cannot vote, but the table proceeds without you.");
+    const session = state;
+    (async () => {
+      await delay(1200);
+      if (state !== session) return;
+      castAllVotesAndTally(null, null);
+    })();
+  }
+}
+
+function renderActionSelectVote() {
+  const panel = el("action-panel");
+  panel.innerHTML = "";
+  const p = document.createElement("p");
+  p.textContent = "Cast your vote to banish a suspected Traitor.";
+  panel.appendChild(p);
+
+  const btn = makeButton("Confirm Vote", () => {
+    if (!selectedTargetId) return;
+    const targetId = selectedTargetId;
+    const humanId = Game.humanPlayer(state).id;
+    resetUiState();
+    castAllVotesAndTally(humanId, targetId);
+  });
+  btn.disabled = !selectedTargetId;
+  panel.appendChild(btn);
+}
+
+async function castAllVotesAndTally(humanId, humanTargetId) {
+  renderHeader();
+  renderPlayersGrid();
+  const panel = el("action-panel");
+  panel.innerHTML = `<p class="hint">Casting votes...</p>`;
+  const session = state;
+
+  if (humanId && humanTargetId) {
+    Game.castVote(state, humanId, humanTargetId);
+    const target = Game.getPlayer(state, humanTargetId);
+    Game.addLog(state, `You vote for <b>${escapeHtml(target.name)}</b>.`);
+    renderLog();
+  }
+
+  const bots = Game.livingPlayers(state).filter((p) => !p.isHuman);
+  for (const bot of bots) {
+    if (state !== session) return;
+    const targetId = Game.botDayVote(state, bot);
+    Game.castVote(state, bot.id, targetId);
+    const target = Game.getPlayer(state, targetId);
+    Game.addLog(state, `${escapeHtml(bot.name)} votes for <b>${escapeHtml(target.name)}</b>.`);
+    renderLog();
+    await delay(280);
+  }
+  if (state !== session) return;
+
+  const tally = {};
+  Object.values(state.dayVotes).forEach((id) => {
+    tally[id] = (tally[id] || 0) + 1;
+  });
+  dayTallyPreview = tally;
+  renderPlayersGrid();
+  panel.innerHTML = `<p class="hint">The votes are in...</p>`;
+
+  await delay(1800);
+  if (state !== session) return;
+
+  dayTallyPreview = null;
+  Game.resolveDayVotes(state);
+  renderHeader();
+  renderLog();
+  renderPlayersGrid();
+  await proceedOrEnd(session, playNight);
 }
 
 // ---------- END SCREEN ----------
@@ -409,9 +525,8 @@ function showEndScreen() {
 
 function wireRestart() {
   el("btn-restart").addEventListener("click", () => {
+    resetUiState();
     state = null;
-    selectedTargetId = null;
-    dayTallyPreview = null;
     el("setup-error").textContent = "";
     showScreen("screen-setup");
   });

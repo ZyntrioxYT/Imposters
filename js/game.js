@@ -48,6 +48,7 @@ export function createGame({ humanName, playerCount, traitorCount }) {
     pendingMurderTargetId: null,
     dayVotes: {},
     suspicion: {},
+    shieldPlayerId: null,
   };
 
   players.forEach((p) => (state.suspicion[p.id] = 0));
@@ -100,18 +101,41 @@ export function botMurderTarget(state) {
 }
 
 export function resolveNightMurder(state, targetId) {
-  const victim = getPlayer(state, targetId);
-  if (victim) {
-    victim.alive = false;
-    addLog(state, `<b>${escapeName(victim.name)}</b> was murdered in the night.`, "dramatic");
+  if (targetId && targetId === state.shieldPlayerId) {
+    const protectedPlayer = getPlayer(state, targetId);
+    addLog(
+      state,
+      `The Traitors struck at <b>${escapeName(protectedPlayer.name)}</b>, but they were protected by a shield!`,
+      "dramatic"
+    );
   } else {
-    addLog(state, `The Traitors could not agree on a victim. No one was murdered.`, "dramatic");
+    const victim = targetId ? getPlayer(state, targetId) : null;
+    if (victim) {
+      victim.alive = false;
+      victim.deathReason = "murdered";
+      addLog(state, `<b>${escapeName(victim.name)}</b> was murdered in the night.`, "dramatic");
+    } else {
+      addLog(state, `The Traitors could not agree on a victim. No one was murdered.`, "dramatic");
+    }
   }
+
+  state.shieldPlayerId = null;
   state.pendingMurderTargetId = null;
   state.phase = "day-reveal";
 
-  const win = checkWinCondition(state);
-  if (win) return;
+  checkWinCondition(state);
+}
+
+// --- Mission phase ---
+
+export function resolveMissionResult(state, success) {
+  const human = humanPlayer(state);
+  if (success) {
+    state.shieldPlayerId = human.id;
+    addLog(state, `You completed the mission and won a <b>shield</b> for tonight!`, "win");
+  } else {
+    addLog(state, `The mission was not completed. No shield tonight.`, "dramatic");
+  }
 }
 
 // --- Day phase ---
@@ -179,6 +203,7 @@ export function resolveDayVotes(state) {
   if (banishedId) {
     const banished = getPlayer(state, banishedId);
     banished.alive = false;
+    banished.deathReason = "banished";
     addLog(
       state,
       `<b>${escapeName(banished.name)}</b> was banished with ${maxVotes} vote${maxVotes === 1 ? "" : "s"}. They were a <b>${banished.role.toUpperCase()}</b>.`,

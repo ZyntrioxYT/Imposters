@@ -94,6 +94,7 @@ function memoryVault(container, onResult) {
       if (done) return;
       instruction.textContent = "Now repeat the sequence!";
       accepting = true;
+      timers.push(setTimeout(() => finish(false), 10000));
     }, sequence.length * 700 + 200)
   );
 

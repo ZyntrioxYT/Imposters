@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>The Traitors</title>
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- SETUP -->
+  <section id="screen-setup" class="screen active">
+    <div class="panel">
+      <h1 class="title">THE TRAITORS</h1>
+      <p class="subtitle">Trust no one.</p>
+
+      <label class="field">
+        <span>Your name</span>
+        <input id="input-name" type="text" maxlength="16" placeholder="Enter your name" />
+      </label>
+
+      <label class="field">
+        <span>Players: <b id="label-players">10</b></span>
+        <input id="input-players" type="range" min="5" max="16" value="10" />
+      </label>
+
+      <label class="field">
+        <span>Traitors: <b id="label-traitors">2</b></span>
+        <input id="input-traitors" type="range" min="1" max="4" value="2" />
+      </label>
+
+      <button id="btn-start" class="btn btn-primary">Enter the Castle</button>
+      <p id="setup-error" class="error"></p>
+    </div>
+  </section>
+
+  <!-- ROLE REVEAL -->
+  <section id="screen-reveal" class="screen">
+    <div class="panel reveal-panel">
+      <p class="subtitle">Your role is...</p>
+      <div id="reveal-card" class="reveal-card">
+        <div class="reveal-card-inner">
+          <div class="reveal-card-front">?</div>
+          <div class="reveal-card-back">
+            <div id="reveal-role" class="reveal-role"></div>
+            <div id="reveal-desc" class="reveal-desc"></div>
+          </div>
+        </div>
+      </div>
+      <button id="btn-reveal" class="btn btn-primary">Reveal Role</button>
+      <button id="btn-continue" class="btn btn-primary hidden">Enter the Game</button>
+    </div>
+  </section>
+
+  <!-- GAME -->
+  <section id="screen-game" class="screen">
+    <header class="game-header">
+      <div class="round-info">
+        <span id="round-label">Round 1</span>
+        <span id="phase-label" class="phase-badge">Night</span>
+      </div>
+      <div id="role-reminder" class="role-reminder"></div>
+    </header>
+
+    <div class="game-body">
+      <div class="players-grid" id="players-grid"></div>
+
+      <div class="side-panel">
+        <div class="log-panel" id="log-panel"></div>
+        <div class="action-panel" id="action-panel"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- END -->
+  <section id="screen-end" class="screen">
+    <div class="panel">
+      <h1 id="end-title" class="title"></h1>
+      <p id="end-subtitle" class="subtitle"></p>
+      <div id="end-roster" class="end-roster"></div>
+      <button id="btn-restart" class="btn btn-primary">Play Again</button>
+    </div>
+  </section>
+
+</div>
+
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
